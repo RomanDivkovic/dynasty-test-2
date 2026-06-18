@@ -1,0 +1,8 @@
+[
+  { "day": 1, "games": [["BOS", "NYK"], ["LAL", "DEN"], ["DAL", "MIN"], ["MIA", "ORL"], ["GSW", "PHX"]] },
+  { "day": 2, "games": [["MIL", "CLE"], ["PHI", "TOR"], ["OKC", "SAS"], ["MEM", "NOP"], ["SAC", "POR"]] },
+  { "day": 3, "games": [["ATL", "CHA"], ["CHI", "DET"], ["IND", "BKN"], ["LAC", "HOU"], ["UTA", "WAS"]] },
+  { "day": 4, "games": [["DEN", "OKC"], ["NYK", "BOS"], ["PHX", "LAL"], ["MIN", "DAL"], ["ORL", "MIA"]] },
+  { "day": 5, "games": [["CLE", "MIL"], ["TOR", "PHI"], ["SAS", "GSW"], ["NOP", "MEM"], ["POR", "SAC"]] },
+  { "day": 6, "games": [["CHA", "ATL"], ["DET", "CHI"], ["BKN", "IND"], ["HOU", "LAC"], ["WAS", "UTA"]] }
+]
