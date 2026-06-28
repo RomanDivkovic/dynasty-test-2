@@ -12,6 +12,8 @@ export type Position = "PG" | "SG" | "SF" | "PF" | "C";
 
 export type CoachingStyle = "Balanced" | "Defensive" | "Offensive" | "Development" | "Pace and Space";
 
+export type CoachBackground = "Former pro player" | "Former college player" | "Former college coach";
+
 export type OffensivePhilosophy =
   | "Balanced"
   | "Shoot more threes"
@@ -90,6 +92,7 @@ export interface Coach {
   id: string;
   name: string;
   age: number;
+  background: CoachBackground;
   coachingStyle: CoachingStyle;
   offensivePhilosophy: OffensivePhilosophy;
   defensivePhilosophy: DefensivePhilosophy;
@@ -164,6 +167,7 @@ export interface GameState {
   homeStats: TeamGameStats;
   awayStats: TeamGameStats;
   boxScores: Record<string, PlayerBoxScore>;
+  benchedIds: string[];
   playByPlay: PlayByPlayEvent[];
   homePlan: TeamGamePlan;
   awayPlan: TeamGamePlan;
@@ -187,11 +191,34 @@ export interface Season {
   championTeamId?: string;
 }
 
+export type TrainingAttribute =
+  | "threePoint"
+  | "midrange"
+  | "insideScoring"
+  | "passing"
+  | "rebounding"
+  | "perimeterDefense"
+  | "interiorDefense"
+  | "athleticism"
+  | "stamina";
+
+export interface TradeProposal {
+  id: string;
+  offeredPlayerIds: string[];
+  requestedPlayerIds: string[];
+  targetTeamId: string;
+  status: "pending" | "accepted" | "rejected";
+  rejectionReason?: string;
+}
+
 export interface CareerSave {
   id: string;
   name: string;
   savedAt: string;
   selectedTeamId: string;
   coach: Coach;
+  players: Player[];
   season: Season;
+  startingLineups: Record<string, string[]>;
+  trainingSessionsUsed: Record<string, number>;
 }

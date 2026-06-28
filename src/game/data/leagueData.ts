@@ -1,6 +1,5 @@
 import teamsJson from "../../data/teams.json";
 import playersJson from "../../data/players.json";
-import scheduleJson from "../../data/schedule.json";
 import type {
   Division,
   Player,
@@ -19,6 +18,50 @@ interface PlayerSeed {
 }
 
 const positions: Position[] = ["PG", "SG", "SF", "PF", "C"];
+
+// Seeded RNG for deterministic bench player generation
+function hashStr(s: string): number {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) {
+    h = ((h << 5) + h) ^ s.charCodeAt(i);
+  }
+  return Math.abs(h) || 1;
+}
+
+function makeRng(seed: number) {
+  let state = seed;
+  return {
+    next(): number {
+      state = (state * 1664525 + 1013904223) & 0x7fffffff;
+      return state / 0x7fffffff;
+    },
+    int(min: number, max: number): number {
+      return min + Math.floor(this.next() * (max - min + 1));
+    },
+  };
+}
+
+const BENCH_FIRST = [
+  "Marcus","Malik","Andre","Darius","Cameron","Isaiah","Jermaine","Marquise","Keon","Rashad",
+  "Terrence","Corey","Xavier","Devon","Quincy","Reggie","Lance","Lamar","Trevon","Kendrick",
+  "Monte","Preston","Dion","Kendall","Marvin","Javon","DeShawn","Cedric","Damien","Elijah",
+  "Fletcher","Garrison","Hakeem","Jerome","Kieran","Lorenzo","Nate","Omar","Patrick","Quinton",
+  "Ronnie","Sterling","Travis","Vernon","Winston","Alton","Barrett","Clayton","Dwayne","Emanuel",
+  "Forrest","Grant","Henry","Irving","Julius","Kenneth","Lewis","Maxwell","Nathan","Otis",
+  "Ricky","Samuel","Theodore","Ulysses","Victor","Walter","Xander","Yusuf","Zachariah","Alfonso",
+];
+
+const BENCH_LAST = [
+  "Williams","Johnson","Davis","Brown","Wilson","Moore","Taylor","Jackson","Harris","Thomas",
+  "White","Martin","Thompson","Robinson","Clark","Lewis","Lee","Walker","Hall","Allen",
+  "Young","Hill","Scott","Green","Adams","Baker","Nelson","Carter","Mitchell","Perez",
+  "Roberts","Turner","Phillips","Campbell","Parker","Evans","Edwards","Collins","Stewart","Morris",
+  "Rogers","Reed","Cook","Morgan","Bell","Murphy","Bailey","Rivera","Cooper","Richardson",
+  "Cox","Howard","Ward","Torres","Peterson","Gray","James","Watson","Brooks","Kelly",
+  "Sanders","Price","Bennett","Henderson","Coleman","Jenkins","Perry","Powell","Long","Patterson",
+];
+
+const BENCH_POSITIONS: Position[] = ["PG","SG","SG","SF","SF","PF","PF","C","PG","SF"];
 
 const heights: Record<Position, string> = {
   PG: "6'2\"",
@@ -65,7 +108,7 @@ function attributesFor(position: Position, overall: number, potential: number, i
 }
 
 function expandPlayers(seed: PlayerSeed): Player[] {
-  return seed.stars.map((name, index) => {
+  const stars = seed.stars.map((name, index) => {
     const position = seed.positions?.[index] ?? positions[index] ?? "SF";
     const overall = rating(seed.base, 9 - index * 3);
     const age = Math.max(19, Math.min(40, 24 + index * 2 + (seed.base > 84 ? 2 : 0)));
@@ -84,6 +127,45 @@ function expandPlayers(seed: PlayerSeed): Player[] {
       attributes: attributesFor(position, overall, potential, index),
     };
   });
+
+  const rng = makeRng(hashStr(seed.teamId));
+  const usedNames = new Set(seed.stars);
+
+  const bench: Player[] = [];
+  for (let i = 0; i < 10; i++) {
+    const slot = i + seed.stars.length;
+    const position = BENCH_POSITIONS[i];
+    const overall = Math.max(58, Math.min(76, seed.base - 14 + Math.floor(rng.next() * 12)));
+    const age = rng.int(19, 34);
+    const potential = rating(overall, rng.int(0, 6));
+
+    let firstName: string;
+    let lastName: string;
+    let fullName: string;
+    let attempts = 0;
+    do {
+      firstName = BENCH_FIRST[rng.int(0, BENCH_FIRST.length - 1)];
+      lastName = BENCH_LAST[rng.int(0, BENCH_LAST.length - 1)];
+      fullName = `${firstName} ${lastName}`;
+      attempts++;
+    } while (usedNames.has(fullName) && attempts < 20);
+    usedNames.add(fullName);
+
+    bench.push({
+      id: `${seed.teamId}-${slot + 1}`,
+      name: fullName,
+      age,
+      height: heights[position],
+      weight: weights[position] + rng.int(-5, 10),
+      teamId: seed.teamId,
+      position,
+      overall,
+      potential,
+      attributes: attributesFor(position, overall, potential, slot),
+    });
+  }
+
+  return [...stars, ...bench];
 }
 
 export function loadTeams(): Team[] {
@@ -101,15 +183,7 @@ export function loadPlayers(): Player[] {
 export function loadSeason(year = 2026): Season {
   const teams = loadTeams();
   const records = Object.fromEntries(teams.map((team) => [team.id, { wins: 0, losses: 0 }]));
-  const schedule: ScheduledGame[] = scheduleJson.flatMap((dayEntry) =>
-    dayEntry.games.map(([awayTeamId, homeTeamId], index) => ({
-      id: `${year}-${dayEntry.day}-${index + 1}`,
-      day: dayEntry.day,
-      awayTeamId,
-      homeTeamId,
-      played: false,
-    })),
-  );
+  const schedule = generateFullSeasonSchedule(teams, year);
 
   return {
     year,
@@ -117,6 +191,48 @@ export function loadSeason(year = 2026): Season {
     schedule,
     records,
   };
+}
+
+export function generateFullSeasonSchedule(teams: Team[], year: number): ScheduledGame[] {
+  const games: Array<Omit<ScheduledGame, "id" | "day" | "played">> = [];
+  const gameCounts = Object.fromEntries(teams.map((team) => [team.id, 0]));
+
+  for (let homeIndex = 0; homeIndex < teams.length; homeIndex += 1) {
+    for (let awayIndex = homeIndex + 1; awayIndex < teams.length; awayIndex += 1) {
+      const homeTeamId = teams[homeIndex].id;
+      const awayTeamId = teams[awayIndex].id;
+      games.push({ homeTeamId, awayTeamId });
+      games.push({ homeTeamId: awayTeamId, awayTeamId: homeTeamId });
+      gameCounts[homeTeamId] += 2;
+      gameCounts[awayTeamId] += 2;
+    }
+  }
+
+  let rotation = 0;
+  while (Object.values(gameCounts).some((count) => count < 82)) {
+    const home = teams.find((team) => gameCounts[team.id] < 82);
+    if (!home) break;
+
+    const candidateOpponents = teams.filter((team) => team.id !== home.id && gameCounts[team.id] < 82);
+    const away = candidateOpponents[rotation % Math.max(1, candidateOpponents.length)];
+    if (!away) break;
+
+    const flipHome = rotation % 2 === 0;
+    games.push({
+      homeTeamId: flipHome ? home.id : away.id,
+      awayTeamId: flipHome ? away.id : home.id,
+    });
+    gameCounts[home.id] += 1;
+    gameCounts[away.id] += 1;
+    rotation += 1;
+  }
+
+  return games.map((game, index) => ({
+    ...game,
+    id: `${year}-${index + 1}`,
+    day: Math.floor(index / 15) + 1,
+    played: false,
+  }));
 }
 
 export function validateLeagueData() {

@@ -13,7 +13,7 @@ import { chance, clamp, pickWeighted, type RandomSource } from "./random";
 import { emptyBoxScore, emptyTeamStats } from "./stats";
 
 const QUARTER_SECONDS = 12 * 60;
-const MAX_QUARTERS = 4;
+const LAST_REGULATION_QUARTER = 4;
 
 interface StartGameInput {
   season: number;
@@ -21,6 +21,8 @@ interface StartGameInput {
   homeTeamId: string;
   awayTeamId: string;
   players: Player[];
+  homeLineup?: string[];
+  awayLineup?: string[];
   homePlan?: TeamGamePlan;
   awayPlan?: TeamGamePlan;
 }
@@ -32,8 +34,13 @@ interface SimContext {
 }
 
 export function createGame(input: StartGameInput): GameState {
-  const homeRoster = getRoster(input.players, input.homeTeamId).slice(0, 5);
-  const awayRoster = getRoster(input.players, input.awayTeamId).slice(0, 5);
+  const allById = Object.fromEntries(input.players.map((p) => [p.id, p]));
+  const homeRoster = input.homeLineup
+    ? input.homeLineup.map((id) => allById[id]).filter(Boolean).slice(0, 5)
+    : getRoster(input.players, input.homeTeamId).slice(0, 5);
+  const awayRoster = input.awayLineup
+    ? input.awayLineup.map((id) => allById[id]).filter(Boolean).slice(0, 5)
+    : getRoster(input.players, input.awayTeamId).slice(0, 5);
   const boxScores = Object.fromEntries(
     [...homeRoster, ...awayRoster].map((player) => [player.id, emptyBoxScore(player.id)]),
   );
@@ -53,6 +60,7 @@ export function createGame(input: StartGameInput): GameState {
     homeStats: emptyTeamStats(),
     awayStats: emptyTeamStats(),
     boxScores,
+    benchedIds: [],
     playByPlay: [],
     homePlan: input.homePlan ?? createDefaultGamePlan(homeRoster.map((player) => player.id)),
     awayPlan: input.awayPlan ?? createDefaultGamePlan(awayRoster.map((player) => player.id)),
@@ -69,12 +77,18 @@ export function simulatePossession(state: GameState, context: SimContext): GameS
   const defensePlan = defenseId === next.homeTeamId ? next.homePlan : next.awayPlan;
   const offenseStats = offenseId === next.homeTeamId ? next.homeStats : next.awayStats;
   const defenseStats = defenseId === next.homeTeamId ? next.homeStats : next.awayStats;
-  const roster = getRoster(context.players, offenseId).slice(0, 5);
-  const defenseRoster = getRoster(context.players, defenseId).slice(0, 5);
+  const roster = Object.keys(next.boxScores)
+    .map((id) => context.players.find((p) => p.id === id))
+    .filter((p): p is Player => !!p && p.teamId === offenseId && !next.benchedIds.includes(p.id));
+  const defenseRoster = Object.keys(next.boxScores)
+    .map((id) => context.players.find((p) => p.id === id))
+    .filter((p): p is Player => !!p && p.teamId === defenseId && !next.benchedIds.includes(p.id));
   const ballHandler = chooseShooter(roster, offensePlan, context.rng);
   const defenderQuality = averageDefense(defenseRoster);
   const fatigue = next.boxScores[ballHandler.id]?.fatigue ?? 0;
   const possessionSeconds = calculatePaceSeconds(offensePlan, defensePlan, context.rng);
+  const eventQuarter = next.quarter;
+  const eventClock = formatClock(next.clockSeconds - possessionSeconds);
 
   advanceClock(next, possessionSeconds);
   ensureBox(next.boxScores, ballHandler.id).minutes += possessionSeconds / 60;
@@ -149,8 +163,8 @@ export function simulatePossession(state: GameState, context: SimContext): GameS
   next.playByPlay = [
     {
       id: `${next.id}-${next.possession}`,
-      quarter: next.quarter,
-      clock: formatClock(next.clockSeconds),
+      quarter: eventQuarter,
+      clock: eventClock,
       possession: next.possession,
       teamId: offenseId,
       text: eventText,
@@ -160,7 +174,7 @@ export function simulatePossession(state: GameState, context: SimContext): GameS
     ...next.playByPlay,
   ].slice(0, 120);
 
-  if (next.quarter > MAX_QUARTERS && next.homeStats.points !== next.awayStats.points) {
+  if (next.quarter > LAST_REGULATION_QUARTER && next.homeStats.points !== next.awayStats.points) {
     next.isFinal = true;
     next.clockSeconds = 0;
   }
@@ -168,7 +182,7 @@ export function simulatePossession(state: GameState, context: SimContext): GameS
   return next;
 }
 
-export function simulateToFinal(state: GameState, context: SimContext, maxPossessions = 260) {
+export function simulateToFinal(state: GameState, context: SimContext, maxPossessions = 500) {
   let next = state;
   let guard = 0;
   while (!next.isFinal && guard < maxPossessions) {
