@@ -1,12 +1,31 @@
 import { useEffect, useRef, useState } from "react";
-import { FastForward, Gauge, Pause, Play } from "lucide-react";
+import { FastForward, Gauge, Pause, Play, Trophy } from "lucide-react";
 import { getTeam, formatTeam } from "../game/data/selectors";
 import { formatClock, shootingLine } from "../game/simulation/engine";
+import { findActiveSeriesForTeam } from "../game/simulation/season";
+import type { PlayoffBracket } from "../game/types/domain";
 import { useCareerStore } from "../store/careerStore";
 import { Metric } from "./Metric";
 
 type Speed = 1 | 2 | 4;
 const SPEED_MS: Record<Speed, number> = { 1: 700, 2: 300, 4: 120 };
+
+const ROUND_NAMES: Record<number, string> = {
+  1: "First Round",
+  2: "Conference Semis",
+  3: "Conference Finals",
+  4: "NBA Finals",
+};
+
+type SubMode = "quick" | "batch";
+type PendingSub = { outId: string; inId: string };
+
+function projectedActiveIds(activeIds: string[], pendingSubs: PendingSub[]) {
+  return pendingSubs.reduce((current, change) => {
+    if (!current.includes(change.outId) || current.includes(change.inId)) return current;
+    return [...current.filter((id) => id !== change.outId), change.inId];
+  }, activeIds);
+}
 
 export function GameCenter() {
   const teams = useCareerStore((s) => s.teams);
@@ -22,6 +41,8 @@ export function GameCenter() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [speed, setSpeed] = useState<Speed>(1);
   const [showSubs, setShowSubs] = useState(false);
+  const [subMode, setSubMode] = useState<SubMode>("quick");
+  const [pendingSubs, setPendingSubs] = useState<PendingSub[]>([]);
   const [subOutId, setSubOutId] = useState<string | null>(null);
 
   const simRef = useRef(simulateNextPossession);
@@ -36,7 +57,13 @@ export function GameCenter() {
 
   // Pause when game ends
   useEffect(() => {
-    if (!activeGame) { setIsPlaying(false); setShowSubs(false); setSubOutId(null); }
+    if (!activeGame) {
+      setIsPlaying(false);
+      setShowSubs(false);
+      setSubOutId(null);
+      setPendingSubs([]);
+      setSubMode("quick");
+    }
     if (activeGame?.isFinal) setIsPlaying(false);
   }, [activeGame]);
 
@@ -53,6 +80,15 @@ export function GameCenter() {
 
   if (!activeGame) {
     const record = season.records[selectedTeamId] ?? { wins: 0, losses: 0 };
+
+    if (season.phase === "complete") {
+      return <SeasonCompleteScreen />;
+    }
+
+    if (season.phase === "playoffs" && season.playoffs) {
+      return <PlayoffScreen bracket={season.playoffs} onStartGame={startNextGame} />;
+    }
+
     return (
       <div className="grid gap-4">
         {/* Season progress */}
@@ -96,8 +132,8 @@ export function GameCenter() {
           </div>
         ) : (
           <div className="rounded-lg bg-mint p-4 text-center">
-            <div className="text-base font-black text-pine">Season Complete!</div>
-            <div className="text-sm text-pine/70">Final record: {record.wins}–{record.losses}</div>
+            <div className="text-base font-black text-pine">Regular Season Complete!</div>
+            <div className="text-sm text-pine/70">Final record: {record.wins}–{record.losses}. Advancing to playoffs…</div>
           </div>
         )}
 
@@ -133,7 +169,23 @@ export function GameCenter() {
 
   // Full bench: players on user team NOT currently active
   const rosterIds = players.filter((p) => p.teamId === userTeamId).map((p) => p.id);
-  const trullyBench = rosterIds.filter((id) => !activeIds.includes(id));
+  const projectedActive = projectedActiveIds(activeIds, pendingSubs);
+  const benchIds = rosterIds.filter((id) => !projectedActive.includes(id));
+
+  const commitPendingSubs = () => {
+    if (!pendingSubs.length) return;
+    pendingSubs.forEach((change) => substitutePlayer(change.outId, change.inId));
+    setPendingSubs([]);
+    setSubOutId(null);
+    setShowSubs(false);
+  };
+
+  const queueSubstitution = (outId: string, inId: string) => {
+    setPendingSubs((current) => {
+      const trimmed = current.filter((change) => change.outId !== outId && change.inId !== inId);
+      return [...trimmed, { outId, inId }];
+    });
+  };
 
   return (
     <div className="grid gap-4">
@@ -210,18 +262,69 @@ export function GameCenter() {
             }`}
             onClick={() => { setShowSubs((v) => !v); setSubOutId(null); }}
           >
-            {showSubs ? "Close Substitution Panel" : "🔄 Make a Substitution"}
+            {showSubs ? "Close Substitution Panel" : "Make a Substitution"}
+            {!!pendingSubs.length && ` (${pendingSubs.length} staged)`}
           </button>
 
           {/* Substitution panel */}
           {showSubs && (
             <div className="rounded-lg border border-black/10 bg-white p-3">
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <div className="rounded-lg border border-black/10 bg-chalk p-1 text-xs font-black">
+                  <button
+                    className={`rounded px-2.5 py-1 transition ${subMode === "quick" ? "bg-white text-ink" : "text-slate-500"}`}
+                    onClick={() => setSubMode("quick")}
+                  >
+                    Fast one sub
+                  </button>
+                  <button
+                    className={`rounded px-2.5 py-1 transition ${subMode === "batch" ? "bg-white text-ink" : "text-slate-500"}`}
+                    onClick={() => setSubMode("batch")}
+                  >
+                    Make more changes
+                  </button>
+                </div>
+                {subMode === "batch" && (
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      className="rounded border border-black/10 px-2.5 py-1 text-xs font-black text-slate-500 transition hover:border-pine hover:text-ink"
+                      onClick={() => setPendingSubs([])}
+                      disabled={!pendingSubs.length}
+                    >
+                      Clear
+                    </button>
+                    <button
+                      className="rounded bg-pine px-2.5 py-1 text-xs font-black text-white transition hover:bg-ink disabled:opacity-50"
+                      onClick={commitPendingSubs}
+                      disabled={!pendingSubs.length}
+                    >
+                      Apply {pendingSubs.length} Changes
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {subMode === "batch" && pendingSubs.length > 0 && (
+                <div className="mb-3 grid gap-1 rounded-lg border border-black/10 bg-chalk p-2">
+                  <div className="text-[11px] font-black uppercase text-slate-500">Staged substitutions</div>
+                  {pendingSubs.map((change, index) => {
+                    const outPlayer = players.find((p) => p.id === change.outId);
+                    const inPlayer = players.find((p) => p.id === change.inId);
+                    return (
+                      <div key={`${change.outId}-${change.inId}-${index}`} className="text-xs font-bold text-slate-600">
+                        {outPlayer?.name ?? change.outId} {"->"} {inPlayer?.name ?? change.inId}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
               <div className="mb-3 text-xs font-black uppercase text-slate-500">
                 {subOutId ? "Choose player to bring IN" : "Choose player to take OUT"}
               </div>
               {!subOutId ? (
                 <div className="grid gap-1">
-                  {activeIds.map((id) => {
+                  {projectedActive.map((id) => {
                     const p = players.find((pl) => pl.id === id);
                     if (!p) return null;
                     const box = activeGame.boxScores[id];
@@ -254,7 +357,7 @@ export function GameCenter() {
                   >
                     ← Back
                   </button>
-                  {trullyBench.map((id) => {
+                  {benchIds.map((id) => {
                     const p = players.find((pl) => pl.id === id);
                     if (!p) return null;
                     return (
@@ -262,16 +365,22 @@ export function GameCenter() {
                         key={id}
                         className="flex w-full items-center gap-3 rounded border border-black/10 px-3 py-2 text-left hover:border-pine hover:bg-mint"
                         onClick={() => {
-                          substitutePlayer(subOutId, id);
+                          if (subMode === "quick") {
+                            substitutePlayer(subOutId, id);
+                            setShowSubs(false);
+                          } else {
+                            queueSubstitution(subOutId, id);
+                          }
                           setSubOutId(null);
-                          setShowSubs(false);
                         }}
                       >
                         <div className="min-w-0 flex-1">
                           <span className="text-sm font-black">{p.name}</span>
                           <span className="ml-2 text-xs text-slate-500">{p.position} · OVR {p.overall}</span>
                         </div>
-                        <div className="text-xs font-bold text-pine">Sub IN ↑</div>
+                        <div className="text-xs font-bold text-pine">
+                          {subMode === "quick" ? "Sub IN" : "Stage Change"}
+                        </div>
                       </button>
                     );
                   })}
@@ -324,6 +433,117 @@ function ScoreBlock({ label, score, align }: { label: string; score: number; ali
     <div className={align === "right" ? "text-right" : "text-left"}>
       <div className="text-[11px] font-black uppercase text-white/60">{label}</div>
       <div className="text-5xl font-black leading-none">{score}</div>
+    </div>
+  );
+}
+
+function PlayoffScreen({ bracket, onStartGame }: { bracket: PlayoffBracket; onStartGame: () => void }) {
+  const teams = useCareerStore((s) => s.teams);
+  const selectedTeamId = useCareerStore((s) => s.selectedTeamId);
+  const activeSeries = findActiveSeriesForTeam(bracket, selectedTeamId);
+  const rounds = [1, 2, 3, 4].map((round) => ({
+    round,
+    series: bracket.series.filter((s) => s.round === round),
+  })).filter((r) => r.series.length);
+
+  return (
+    <div className="grid gap-4">
+      <div className="rounded-lg bg-ink p-4 text-center text-white">
+        <div className="flex items-center justify-center gap-2 text-xs font-black uppercase text-white/60">
+          <Trophy size={14} />
+          Playoffs · {bracket.year}
+        </div>
+        {activeSeries ? (
+          <>
+            <div className="mt-1 text-lg font-black">
+              {formatTeam(getTeam(teams, activeSeries.homeTeamId))} vs {formatTeam(getTeam(teams, activeSeries.awayTeamId))}
+            </div>
+            <div className="text-sm text-white/70">
+              {ROUND_NAMES[activeSeries.round]} · Series {activeSeries.homeWins}-{activeSeries.awayWins} · First to {activeSeries.winsRequired}
+            </div>
+          </>
+        ) : (
+          <div className="mt-1 text-sm text-white/70">Waiting for your next series…</div>
+        )}
+      </div>
+
+      {activeSeries && (
+        <button
+          className="inline-flex items-center justify-center gap-2 rounded-lg bg-court px-4 py-3 text-sm font-black text-white transition hover:bg-ink"
+          onClick={onStartGame}
+        >
+          <Play size={18} />
+          Start Next Playoff Game
+        </button>
+      )}
+
+      <div className="grid gap-3">
+        {rounds.map(({ round, series }) => (
+          <div key={round} className="rounded-lg border border-black/10 bg-white p-3">
+            <div className="mb-2 text-xs font-black uppercase text-slate-500">{ROUND_NAMES[round]}</div>
+            <div className="grid gap-1.5 sm:grid-cols-2">
+              {series.map((s) => {
+                const involvesUser = s.homeTeamId === selectedTeamId || s.awayTeamId === selectedTeamId;
+                return (
+                  <div
+                    key={s.id}
+                    className={`rounded-lg border px-3 py-2 text-sm ${
+                      involvesUser ? "border-court bg-court/5" : "border-black/10 bg-chalk/50"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between font-bold">
+                      <span className={s.winnerTeamId === s.homeTeamId ? "text-pine" : ""}>
+                        {getTeam(teams, s.homeTeamId).abbreviation}
+                      </span>
+                      <span className="text-slate-400">{s.homeWins}-{s.awayWins}</span>
+                      <span className={s.winnerTeamId === s.awayTeamId ? "text-pine" : ""}>
+                        {getTeam(teams, s.awayTeamId).abbreviation}
+                      </span>
+                    </div>
+                    {!s.completed && <div className="mt-0.5 text-[11px] text-slate-500">In progress</div>}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SeasonCompleteScreen() {
+  const teams = useCareerStore((s) => s.teams);
+  const season = useCareerStore((s) => s.season);
+  const selectedTeamId = useCareerStore((s) => s.selectedTeamId);
+  const startNewSeason = useCareerStore((s) => s.startNewSeason);
+  const record = season.records[selectedTeamId] ?? { wins: 0, losses: 0 };
+  const championId = season.championTeamId ?? season.playoffs?.champion;
+  const champion = championId ? teams.find((t) => t.id === championId) : undefined;
+  const userWonItAll = championId === selectedTeamId;
+
+  return (
+    <div className="grid gap-4">
+      <div className="rounded-lg bg-ink p-6 text-center text-white">
+        <Trophy size={32} className="mx-auto text-yellow-400" />
+        <div className="mt-2 text-lg font-black">{season.year} Season Complete</div>
+        {champion && (
+          <div className="mt-1 text-sm text-white/70">
+            {userWonItAll ? "You won the championship!" : `Champion: ${formatTeam(champion)}`}
+          </div>
+        )}
+        <div className="mt-1 text-xs font-bold text-white/50">
+          Your regular season record: {record.wins}–{record.losses}
+        </div>
+      </div>
+
+      <button
+        className="inline-flex items-center justify-center gap-2 rounded-lg bg-court px-4 py-3 text-sm font-black text-white transition hover:bg-ink"
+        onClick={startNewSeason}
+      >
+        <Play size={18} />
+        Start {season.year + 1} Season
+      </button>
     </div>
   );
 }

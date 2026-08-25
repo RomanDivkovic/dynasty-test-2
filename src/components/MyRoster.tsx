@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Dumbbell, Users } from "lucide-react";
 import { getRoster } from "../game/data/selectors";
 import { useCareerStore } from "../store/careerStore";
+import { PlayerBioModal } from "./PlayerBioModal";
 import type { Player, TrainingAttribute } from "../game/types/domain";
 
 const TRAINING_OPTIONS: { value: TrainingAttribute; label: string }[] = [
@@ -26,9 +27,11 @@ export function MyRoster() {
 
   const [activeView, setActiveView] = useState<"lineup" | "training">("lineup");
   const [trainingTarget, setTrainingTarget] = useState<Player | null>(null);
+  const [viewPlayerId, setViewPlayerId] = useState<string | null>(null);
 
   const roster = getRoster(players, selectedTeamId);
   const starting = startingLineups[selectedTeamId] ?? roster.slice(0, 5).map((p) => p.id);
+  const viewPlayer = roster.find((p) => p.id === viewPlayerId);
 
   const toggleStarter = (playerId: string) => {
     if (starting.includes(playerId)) {
@@ -78,6 +81,7 @@ export function MyRoster() {
                   <th className="px-3 py-2 text-right">OVR</th>
                   <th className="px-3 py-2 text-right">POT</th>
                   <th className="px-3 py-2 text-center">Start</th>
+                  <th className="px-3 py-2"></th>
                 </tr>
               </thead>
               <tbody>
@@ -105,6 +109,17 @@ export function MyRoster() {
                         >
                           {isStarter ? "START" : "BENCH"}
                         </span>
+                      </td>
+                      <td className="px-3 py-2 text-right">
+                        <button
+                          className="rounded border border-black/10 bg-white px-2 py-1 text-[11px] font-black text-slate-600 transition hover:border-pine hover:text-ink"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setViewPlayerId(player.id);
+                          }}
+                        >
+                          View
+                        </button>
                       </td>
                     </tr>
                   );
@@ -181,6 +196,8 @@ export function MyRoster() {
           )}
         </>
       )}
+
+      {viewPlayer && <PlayerBioModal player={viewPlayer} onClose={() => setViewPlayerId(null)} />}
     </div>
   );
 }
