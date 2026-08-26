@@ -190,41 +190,68 @@ export function loadSeason(year = 2026): Season {
     currentDay: 1,
     schedule,
     records,
+    phase: "regular",
+    playerSeasonStats: {},
   };
 }
 
 export function generateFullSeasonSchedule(teams: Team[], year: number): ScheduledGame[] {
   const games: Array<Omit<ScheduledGame, "id" | "day" | "played">> = [];
   const gameCounts = Object.fromEntries(teams.map((team) => [team.id, 0]));
+  const pairCounts: Record<string, number> = {};
 
-  for (let homeIndex = 0; homeIndex < teams.length; homeIndex += 1) {
-    for (let awayIndex = homeIndex + 1; awayIndex < teams.length; awayIndex += 1) {
-      const homeTeamId = teams[homeIndex].id;
-      const awayTeamId = teams[awayIndex].id;
-      games.push({ homeTeamId, awayTeamId });
-      games.push({ homeTeamId: awayTeamId, awayTeamId: homeTeamId });
-      gameCounts[homeTeamId] += 2;
-      gameCounts[awayTeamId] += 2;
-    }
-  }
+  const pairKey = (teamA: string, teamB: string) => (teamA < teamB ? `${teamA}:${teamB}` : `${teamB}:${teamA}`);
+
+  const addGame = (homeTeamId: string, awayTeamId: string) => {
+    const key = pairKey(homeTeamId, awayTeamId);
+    pairCounts[key] = (pairCounts[key] ?? 0) + 1;
+    games.push({ homeTeamId, awayTeamId });
+    gameCounts[homeTeamId] += 1;
+    gameCounts[awayTeamId] += 1;
+  };
 
   let rotation = 0;
-  while (Object.values(gameCounts).some((count) => count < 82)) {
-    const home = teams.find((team) => gameCounts[team.id] < 82);
-    if (!home) break;
+  let safety = 0;
 
-    const candidateOpponents = teams.filter((team) => team.id !== home.id && gameCounts[team.id] < 82);
-    const away = candidateOpponents[rotation % Math.max(1, candidateOpponents.length)];
-    if (!away) break;
+  while (Object.values(gameCounts).some((count) => count < 82) && safety < 50000) {
+    const teamA = teams
+      .filter((team) => gameCounts[team.id] < 82)
+      .sort((a, b) => gameCounts[a.id] - gameCounts[b.id] || a.id.localeCompare(b.id))[0];
 
-    const flipHome = rotation % 2 === 0;
-    games.push({
-      homeTeamId: flipHome ? home.id : away.id,
-      awayTeamId: flipHome ? away.id : home.id,
-    });
-    gameCounts[home.id] += 1;
-    gameCounts[away.id] += 1;
+    if (!teamA) break;
+
+    const candidates = teams.filter(
+      (team) =>
+        team.id !== teamA.id &&
+        gameCounts[team.id] < 82 &&
+        (pairCounts[pairKey(teamA.id, team.id)] ?? 0) < 4,
+    );
+
+    if (!candidates.length) {
+      const fallback = teams.find((team) => team.id !== teamA.id && gameCounts[team.id] < 82);
+      if (!fallback) break;
+      addGame(rotation % 2 === 0 ? teamA.id : fallback.id, rotation % 2 === 0 ? fallback.id : teamA.id);
+      rotation += 1;
+      safety += 1;
+      continue;
+    }
+
+    const sortedCandidates = [...candidates].sort(
+      (a, b) =>
+        (pairCounts[pairKey(teamA.id, a.id)] ?? 0) - (pairCounts[pairKey(teamA.id, b.id)] ?? 0) ||
+        gameCounts[a.id] - gameCounts[b.id] ||
+        a.id.localeCompare(b.id),
+    );
+
+    const teamB = sortedCandidates[rotation % sortedCandidates.length];
+    const isHomeGame = rotation % 2 === 0;
+    addGame(isHomeGame ? teamA.id : teamB.id, isHomeGame ? teamB.id : teamA.id);
     rotation += 1;
+    safety += 1;
+  }
+
+  if (Object.values(gameCounts).some((count) => count !== 82)) {
+    throw new Error(`Season schedule generation failed: expected 82 games per team, got ${JSON.stringify(gameCounts)}`);
   }
 
   return games.map((game, index) => ({

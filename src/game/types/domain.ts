@@ -183,12 +183,54 @@ export interface ScheduledGame {
   awayScore?: number;
 }
 
+export interface PlayerSeasonStats {
+  playerId: string;
+  gamesPlayed: number;
+  minutes: number;
+  points: number;
+  rebounds: number;
+  assists: number;
+  steals: number;
+  blocks: number;
+  turnovers: number;
+  fga: number;
+  fgm: number;
+  threePa: number;
+  threePm: number;
+  fta: number;
+  ftm: number;
+}
+
+export type SeasonPhase = "regular" | "playoffs" | "complete";
+
+export interface PlayoffSeries {
+  id: string;
+  round: number;
+  conference: Conference | "Finals";
+  homeTeamId: string;
+  awayTeamId: string;
+  homeWins: number;
+  awayWins: number;
+  winsRequired: number;
+  completed: boolean;
+  winnerTeamId?: string;
+}
+
+export interface PlayoffBracket {
+  year: number;
+  series: PlayoffSeries[];
+  champion?: string;
+}
+
 export interface Season {
   year: number;
   currentDay: number;
   schedule: ScheduledGame[];
   records: Record<string, TeamRecord>;
   championTeamId?: string;
+  phase: SeasonPhase;
+  playerSeasonStats: Record<string, PlayerSeasonStats>;
+  playoffs?: PlayoffBracket;
 }
 
 export type TrainingAttribute =
@@ -221,4 +263,12 @@ export interface CareerSave {
   season: Season;
   startingLineups: Record<string, string[]>;
   trainingSessionsUsed: Record<string, number>;
+  seasonHistory: SeasonHistoryEntry[];
+}
+
+export interface SeasonHistoryEntry {
+  year: number;
+  championTeamId: string;
+  userTeamId: string;
+  userRecord: TeamRecord;
 }

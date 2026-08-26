@@ -5,7 +5,18 @@ import { getRoster } from "../game/data/selectors";
 import { loadCareer, saveCareer } from "../game/saves/saveSystem";
 import { createGame, simulatePossession, simulateToFinal } from "../game/simulation/engine";
 import { createDefaultGamePlan } from "../game/simulation/gamePlan";
-import { advanceSeasonDay, applyGameResult } from "../game/simulation/season";
+import { progressPlayers } from "../game/simulation/progression";
+import {
+  accumulatePlayerSeasonStats,
+  advanceSeasonDay,
+  applyGameResult,
+  findActiveSeriesForTeam,
+  generatePlayoffBracket,
+  isRegularSeasonComplete,
+  recordPlayoffGameResult,
+  simulateOtherGamesForDay,
+  simulatePlayoffsToChampion,
+} from "../game/simulation/season";
 import { SeededRandom } from "../game/simulation/random";
 import type {
   CareerSave,
@@ -17,11 +28,22 @@ import type {
   PlayerAttributes,
   ScheduledGame,
   Season,
+  SeasonHistoryEntry,
   Team,
   TeamGamePlan,
-  TradeProposal,
   TrainingAttribute,
 } from "../game/types/domain";
+
+type ActiveGameContext = { type: "regular"; day: number } | { type: "playoff"; seriesId: string };
+
+/** Fills in fields introduced after older saves were written (real stats/playoffs), so legacy saves keep loading. */
+function normalizeSeason(season: Season): Season {
+  return {
+    ...season,
+    phase: season.phase ?? "regular",
+    playerSeasonStats: season.playerSeasonStats ?? {},
+  };
+}
 
 export type AppScreen = "welcome" | "setup" | "main";
 export type MainTab = "game" | "roster" | "scout" | "trades" | "league";
@@ -40,6 +62,8 @@ interface CareerStore {
   coach: Coach;
   season: Season;
   activeGame?: GameState;
+  activeGameContext?: ActiveGameContext;
+  seasonHistory: SeasonHistoryEntry[];
   lastSavedAt?: string;
   rng: SeededRandom;
   startingLineups: Record<string, string[]>;
@@ -48,6 +72,7 @@ interface CareerStore {
   // Navigation
   goToSetup: () => void;
   goToMain: (teamId: string, coachName: string, background: CoachBackground, style: CoachingStyle) => void;
+  startCareer: (teamId: string, coachName: string) => void;
   setActiveTab: (tab: MainTab) => void;
   setScoutTeam: (teamId: string) => void;
   clearTradeResult: () => void;
@@ -69,6 +94,9 @@ interface CareerStore {
   updateUserPlan: (plan: Partial<TeamGamePlan>) => void;
   updatePlayerInstruction: (playerId: string, instruction: TeamGamePlan["playerInstructions"][string]) => void;
   finalizeActiveGame: () => void;
+
+  // Season lifecycle
+  startNewSeason: () => void;
 
   // Saves
   manualSave: () => void;
@@ -122,6 +150,7 @@ function careerFromState(state: CareerStore): CareerSave {
     season: state.season,
     startingLineups: state.startingLineups,
     trainingSessionsUsed: state.trainingSessionsUsed,
+    seasonHistory: state.seasonHistory,
   };
 }
 
@@ -144,6 +173,7 @@ export const useCareerStore = create<CareerStore>((set, get) => ({
   rng: new SeededRandom(20260618),
   startingLineups: defaultStartingLineups(initialPlayers, initialTeams),
   trainingSessionsUsed: {},
+  seasonHistory: [],
 
   // ── Navigation ─────────────────────────────────────────────────────────────
 
@@ -159,13 +189,20 @@ export const useCareerStore = create<CareerStore>((set, get) => ({
       coach: defaultCoach(coachName || "Rookie Coach", background, coachingStyle),
       season: loadSeason(),
       activeGame: undefined,
+      activeGameContext: undefined,
       rng: new SeededRandom(Date.now()),
       players: freshPlayers,
       teams: freshTeams,
       startingLineups: defaultStartingLineups(freshPlayers, freshTeams),
       trainingSessionsUsed: {},
+      seasonHistory: [],
       lastTradeResult: undefined,
     });
+  },
+
+  startCareer: (teamId, coachName) => {
+    const { coach } = get();
+    get().goToMain(teamId, coachName, coach.background, coach.coachingStyle);
   },
 
   setActiveTab: (tab) => set({ activeTab: tab }),
@@ -268,6 +305,36 @@ export const useCareerStore = create<CareerStore>((set, get) => ({
 
   startNextGame: () => {
     const state = get();
+
+    if (state.season.phase === "playoffs") {
+      const bracket = state.season.playoffs;
+      const series = bracket && findActiveSeriesForTeam(bracket, state.selectedTeamId);
+      if (!series) return;
+
+      const opponentId = series.homeTeamId === state.selectedTeamId ? series.awayTeamId : series.homeTeamId;
+      const userLineup = state.startingLineups[state.selectedTeamId] ?? getRoster(state.players, state.selectedTeamId).slice(0, 5).map((p) => p.id);
+      const aiLineup = state.startingLineups[opponentId] ?? getRoster(state.players, opponentId).slice(0, 5).map((p) => p.id);
+      const userPlan = createDefaultGamePlan(userLineup);
+      const aiPlan = createAiGamePlan(state.players, opponentId, state.selectedTeamId);
+      const aiPlanWithLineup = { ...aiPlan, playerInstructions: Object.fromEntries(aiLineup.map((id) => [id, "Neutral" as const])) };
+
+      set({
+        activeGame: createGame({
+          season: state.season.year,
+          gameNumber: series.homeWins + series.awayWins + 1,
+          homeTeamId: series.homeTeamId,
+          awayTeamId: series.awayTeamId,
+          players: state.players,
+          homeLineup: series.homeTeamId === state.selectedTeamId ? userLineup : aiLineup,
+          awayLineup: series.awayTeamId === state.selectedTeamId ? userLineup : aiLineup,
+          homePlan: series.homeTeamId === state.selectedTeamId ? userPlan : aiPlanWithLineup,
+          awayPlan: series.awayTeamId === state.selectedTeamId ? userPlan : aiPlanWithLineup,
+        }),
+        activeGameContext: { type: "playoff", seriesId: series.id },
+      });
+      return;
+    }
+
     const nextGame = nextPlayableGame(state.season, state.selectedTeamId);
     if (!nextGame) return;
 
@@ -293,6 +360,7 @@ export const useCareerStore = create<CareerStore>((set, get) => ({
         homePlan: nextGame.homeTeamId === state.selectedTeamId ? userPlan : aiPlanWithLineup,
         awayPlan: nextGame.awayTeamId === state.selectedTeamId ? userPlan : aiPlanWithLineup,
       }),
+      activeGameContext: { type: "regular", day: nextGame.day },
     });
   },
 
@@ -383,9 +451,82 @@ export const useCareerStore = create<CareerStore>((set, get) => ({
   finalizeActiveGame: () => {
     const state = get();
     if (!state.activeGame?.isFinal) return;
-    const season = advanceSeasonDay(applyGameResult(state.season, state.activeGame));
-    set({ season, activeGame: undefined });
+    const game = state.activeGame;
+    const context = state.activeGameContext;
+
+    if (context?.type === "playoff") {
+      const bracket = state.season.playoffs;
+      if (!bracket) return;
+      const winnerId = game.homeStats.points > game.awayStats.points ? game.homeTeamId : game.awayTeamId;
+      let nextBracket = recordPlayoffGameResult(bracket, context.seriesId, winnerId);
+      nextBracket = simulatePlayoffsToChampion(nextBracket, state.players, state.teams, state.rng, state.selectedTeamId);
+
+      let season: Season = {
+        ...state.season,
+        playoffs: nextBracket,
+        playerSeasonStats: accumulatePlayerSeasonStats(state.season.playerSeasonStats, game.boxScores),
+      };
+      if (nextBracket.champion) {
+        season = { ...season, phase: "complete", championTeamId: nextBracket.champion };
+      }
+      set({ season, activeGame: undefined, activeGameContext: undefined });
+      const saved = saveCareer(careerFromState({ ...get(), season }));
+      set({ lastSavedAt: saved.savedAt });
+      return;
+    }
+
+    let season = applyGameResult(state.season, game);
+    if (context?.type === "regular") {
+      season = simulateOtherGamesForDay(season, context.day, state.players, state.teams, state.rng, state.selectedTeamId);
+    }
+    season = advanceSeasonDay(season);
+
+    if (season.phase === "regular" && isRegularSeasonComplete(season)) {
+      const bracket = generatePlayoffBracket(season, state.teams);
+      const userInBracket = bracket.series.some(
+        (s) => s.homeTeamId === state.selectedTeamId || s.awayTeamId === state.selectedTeamId,
+      );
+      if (userInBracket) {
+        season = { ...season, phase: "playoffs", playoffs: bracket };
+      } else {
+        const finished = simulatePlayoffsToChampion(bracket, state.players, state.teams, state.rng);
+        season = { ...season, phase: "complete", playoffs: finished, championTeamId: finished.champion };
+      }
+    }
+
+    set({ season, activeGame: undefined, activeGameContext: undefined });
     const saved = saveCareer(careerFromState({ ...get(), season }));
+    set({ lastSavedAt: saved.savedAt });
+  },
+
+  // ── Season lifecycle ───────────────────────────────────────────────────────
+
+  startNewSeason: () => {
+    const state = get();
+    if (state.season.phase !== "complete") return;
+
+    const record = state.season.records[state.selectedTeamId] ?? { wins: 0, losses: 0 };
+    const historyEntry: SeasonHistoryEntry = {
+      year: state.season.year,
+      championTeamId: state.season.championTeamId ?? state.season.playoffs?.champion ?? "",
+      userTeamId: state.selectedTeamId,
+      userRecord: record,
+    };
+
+    const progressedPlayers = progressPlayers(state.players);
+    const nextSeason = loadSeason(state.season.year + 1);
+
+    set({
+      players: progressedPlayers,
+      season: nextSeason,
+      activeGame: undefined,
+      activeGameContext: undefined,
+      trainingSessionsUsed: {},
+      seasonHistory: [...state.seasonHistory, historyEntry],
+      coach: { ...state.coach, seasonsCompleted: state.coach.seasonsCompleted + 1 },
+      startingLineups: defaultStartingLineups(progressedPlayers, state.teams),
+    });
+    const saved = saveCareer(careerFromState(get()));
     set({ lastSavedAt: saved.savedAt });
   },
 
@@ -404,11 +545,13 @@ export const useCareerStore = create<CareerStore>((set, get) => ({
       selectedTeamId: save.selectedTeamId,
       coach: save.coach,
       players: save.players ?? loadPlayers(),
-      season: save.season,
+      season: normalizeSeason(save.season),
       activeGame: undefined,
+      activeGameContext: undefined,
       lastSavedAt: save.savedAt,
       startingLineups: save.startingLineups ?? defaultStartingLineups(save.players ?? loadPlayers(), loadTeams()),
       trainingSessionsUsed: save.trainingSessionsUsed ?? {},
+      seasonHistory: save.seasonHistory ?? [],
     });
   },
 }));

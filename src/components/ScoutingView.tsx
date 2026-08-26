@@ -1,5 +1,8 @@
+import { useState } from "react";
 import { getRoster, formatTeam } from "../game/data/selectors";
+import { seasonAverages } from "../game/simulation/season";
 import { useCareerStore } from "../store/careerStore";
+import { PlayerBioModal } from "./PlayerBioModal";
 
 export function ScoutingView() {
   const teams = useCareerStore((s) => s.teams);
@@ -8,11 +11,18 @@ export function ScoutingView() {
   const scoutTeamId = useCareerStore((s) => s.scoutTeamId);
   const setScoutTeam = useCareerStore((s) => s.setScoutTeam);
   const setActiveTab = useCareerStore((s) => s.setActiveTab);
+  const season = useCareerStore((s) => s.season);
+  const [viewPlayerId, setViewPlayerId] = useState<string | null>(null);
 
   // Default to first opponent team
   const effectiveScoutId = scoutTeamId || teams.find((t) => t.id !== selectedTeamId)?.id || "";
   const scoutTeam = teams.find((t) => t.id === effectiveScoutId);
   const roster = getRoster(players, effectiveScoutId);
+  const viewPlayer = roster.find((p) => p.id === viewPlayerId);
+  const upcomingFixtures = season.schedule
+    .filter((game) => game.homeTeamId === effectiveScoutId || game.awayTeamId === effectiveScoutId)
+    .sort((a, b) => a.day - b.day)
+    .slice(0, 6);
 
   const otherTeams = teams.filter((t) => t.id !== selectedTeamId);
 
@@ -65,34 +75,80 @@ export function ScoutingView() {
                   <th className="px-3 py-2 text-right">Age</th>
                   <th className="px-3 py-2 text-right">OVR</th>
                   <th className="px-3 py-2 text-right">POT</th>
+                  <th className="px-3 py-2 text-right">PPG</th>
                   <th className="px-3 py-2 text-right">3PT</th>
                   <th className="px-3 py-2 text-right">REB</th>
                   <th className="px-3 py-2 text-right">DEF</th>
                 </tr>
               </thead>
               <tbody>
-                {roster.map((player, i) => (
-                  <tr key={player.id} className={`border-t border-black/10 ${i < 5 ? "bg-white" : "bg-chalk/50"}`}>
-                    <td className="px-3 py-2">
-                      <div className="font-black">{player.name}</div>
-                      {i < 5 && (
-                        <div className="text-[10px] font-bold uppercase text-court">Starter</div>
-                      )}
-                    </td>
-                    <td className="px-3 py-2 font-bold">{player.position}</td>
-                    <td className="px-3 py-2 text-right">{player.age}</td>
-                    <td className="px-3 py-2 text-right font-black">{player.overall}</td>
-                    <td className="px-3 py-2 text-right">{player.potential}</td>
-                    <td className="px-3 py-2 text-right">{player.attributes.threePoint}</td>
-                    <td className="px-3 py-2 text-right">{player.attributes.rebounding}</td>
-                    <td className="px-3 py-2 text-right">{player.attributes.perimeterDefense}</td>
-                  </tr>
-                ))}
+                {roster.map((player, i) => {
+                  const averages = seasonAverages(season.playerSeasonStats[player.id]);
+                  return (
+                    <tr
+                      key={player.id}
+                      className={`cursor-pointer border-t border-black/10 transition ${
+                        i < 5 ? "bg-white hover:bg-chalk" : "bg-chalk/50 hover:bg-chalk"
+                      }`}
+                      onClick={() => setViewPlayerId(player.id)}
+                    >
+                      <td className="px-3 py-2">
+                        <div className="font-black">{player.name}</div>
+                        {i < 5 && (
+                          <div className="text-[10px] font-bold uppercase text-court">Starter</div>
+                        )}
+                      </td>
+                      <td className="px-3 py-2 font-bold">{player.position}</td>
+                      <td className="px-3 py-2 text-right">{player.age}</td>
+                      <td className="px-3 py-2 text-right font-black">{player.overall}</td>
+                      <td className="px-3 py-2 text-right">{player.potential}</td>
+                      <td className="px-3 py-2 text-right font-bold">
+                        {averages.hasStats ? averages.ppg : "—"}
+                      </td>
+                      <td className="px-3 py-2 text-right">{player.attributes.threePoint}</td>
+                      <td className="px-3 py-2 text-right">{player.attributes.rebounding}</td>
+                      <td className="px-3 py-2 text-right">{player.attributes.perimeterDefense}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
+          {upcomingFixtures.length > 0 && (
+            <div className="rounded-lg border border-black/10 bg-chalk p-4">
+              <div className="mb-2 text-xs font-black uppercase text-slate-500">Upcoming fixtures</div>
+              <div className="space-y-2">
+                {upcomingFixtures.map((game) => {
+                  const opponentId = game.homeTeamId === effectiveScoutId ? game.awayTeamId : game.homeTeamId;
+                  const opponent = teams.find((team) => team.id === opponentId);
+                  const isHome = game.homeTeamId === effectiveScoutId;
+                  return (
+                    <div key={game.id} className="flex items-center justify-between rounded-lg bg-white px-3 py-2">
+                      <div>
+                        <div className="text-[10px] font-black uppercase text-slate-500">Day {game.day}</div>
+                        <div className="font-bold">
+                          {isHome ? "vs" : "@"} {opponent ? formatTeam(opponent) : opponentId}
+                        </div>
+                      </div>
+                      <div className="text-[10px] font-black uppercase text-slate-500">
+                        {game.played ? (game.homeScore !== undefined && game.awayScore !== undefined ? `${game.homeScore}-${game.awayScore}` : "Final") : "Upcoming"}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          <div className="text-[11px] font-bold text-slate-500">
+            Click a player to view full bio, real tracked season stats, and abilities. PPG shows "—" until they've
+            appeared in a simulated game this season.
+          </div>
         </>
       )}
+
+      {viewPlayer && <PlayerBioModal player={viewPlayer} onClose={() => setViewPlayerId(null)} />}
     </div>
   );
 }
+
